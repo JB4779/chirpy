@@ -411,8 +411,91 @@ func TestDeleteChirpInvalidID(t *testing.T) {
 	}
 }
 
+func TestPolkaWebhookMissingAPIKey(t *testing.T) {
+	cfg := &apiConfig{
+		polkaKey: "test-polka-key",
+	}
+
+	body := `{
+		"event": "user.upgraded",
+		"data": {
+			"user_id": "3311741c-680c-4546-99f3-fc9efac2036c"
+		}
+	}`
+
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/polka/webhooks",
+		strings.NewReader(body),
+	)
+
+	recorder := httptest.NewRecorder()
+
+	cfg.handlerPolkaWebhook(
+		recorder,
+		request,
+	)
+
+	result := recorder.Result()
+	defer result.Body.Close()
+
+	if result.StatusCode != http.StatusUnauthorized {
+		t.Errorf(
+			"expected status %d, got %d",
+			http.StatusUnauthorized,
+			result.StatusCode,
+		)
+	}
+}
+
+func TestPolkaWebhookWrongAPIKey(t *testing.T) {
+	cfg := &apiConfig{
+		polkaKey: "correct-key",
+	}
+
+	body := `{
+		"event": "user.upgraded",
+		"data": {
+			"user_id": "3311741c-680c-4546-99f3-fc9efac2036c"
+		}
+	}`
+
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/polka/webhooks",
+		strings.NewReader(body),
+	)
+
+	request.Header.Set(
+		"Authorization",
+		"ApiKey wrong-key",
+	)
+
+	recorder := httptest.NewRecorder()
+
+	cfg.handlerPolkaWebhook(
+		recorder,
+		request,
+	)
+
+	result := recorder.Result()
+	defer result.Body.Close()
+
+	if result.StatusCode != http.StatusUnauthorized {
+		t.Errorf(
+			"expected status %d, got %d",
+			http.StatusUnauthorized,
+			result.StatusCode,
+		)
+	}
+}
+
 func TestPolkaWebhookIgnoresUnknownEvent(t *testing.T) {
-	cfg := &apiConfig{}
+	const polkaKey = "test-polka-key"
+
+	cfg := &apiConfig{
+		polkaKey: polkaKey,
+	}
 
 	body := `{
 		"event": "something.else",
@@ -430,6 +513,11 @@ func TestPolkaWebhookIgnoresUnknownEvent(t *testing.T) {
 	request.Header.Set(
 		"Content-Type",
 		"application/json",
+	)
+
+	request.Header.Set(
+		"Authorization",
+		"ApiKey "+polkaKey,
 	)
 
 	recorder := httptest.NewRecorder()
@@ -452,7 +540,11 @@ func TestPolkaWebhookIgnoresUnknownEvent(t *testing.T) {
 }
 
 func TestPolkaWebhookInvalidJSON(t *testing.T) {
-	cfg := &apiConfig{}
+	const polkaKey = "test-polka-key"
+
+	cfg := &apiConfig{
+		polkaKey: polkaKey,
+	}
 
 	body := `{
 		"event": "user.upgraded",
@@ -468,6 +560,11 @@ func TestPolkaWebhookInvalidJSON(t *testing.T) {
 	request.Header.Set(
 		"Content-Type",
 		"application/json",
+	)
+
+	request.Header.Set(
+		"Authorization",
+		"ApiKey "+polkaKey,
 	)
 
 	recorder := httptest.NewRecorder()
@@ -490,12 +587,21 @@ func TestPolkaWebhookInvalidJSON(t *testing.T) {
 }
 
 func TestPolkaWebhookInvalidJSONReturnsError(t *testing.T) {
-	cfg := &apiConfig{}
+	const polkaKey = "test-polka-key"
+
+	cfg := &apiConfig{
+		polkaKey: polkaKey,
+	}
 
 	request := httptest.NewRequest(
 		http.MethodPost,
 		"/api/polka/webhooks",
 		strings.NewReader(`{"event":`),
+	)
+
+	request.Header.Set(
+		"Authorization",
+		"ApiKey "+polkaKey,
 	)
 
 	recorder := httptest.NewRecorder()

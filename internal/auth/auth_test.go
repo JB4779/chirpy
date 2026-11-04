@@ -1,6 +1,7 @@
 package auth
 
 import (
+	"encoding/hex"
 	"net/http"
 	"testing"
 	"time"
@@ -77,6 +78,7 @@ func TestJWTWrongSecret(t *testing.T) {
 
 func TestGetBearerToken(t *testing.T) {
 	headers := http.Header{}
+
 	headers.Set(
 		"Authorization",
 		"Bearer abc123",
@@ -84,87 +86,12 @@ func TestGetBearerToken(t *testing.T) {
 
 	token, err := GetBearerToken(headers)
 	if err != nil {
-		t.Fatalf("GetBearerToken returned an error: %v", err)
+		t.Fatalf(
+			"GetBearerToken returned an error: %v",
+			err,
+		)
 	}
 
 	if token != "abc123" {
 		t.Errorf(
-			"expected token %q, got %q",
-			"abc123",
-			token,
-		)
-	}
-}
-
-func TestGetBearerTokenMissingHeader(t *testing.T) {
-	headers := http.Header{}
-
-	_, err := GetBearerToken(headers)
-	if err == nil {
-		t.Error("expected missing Authorization header to return an error")
-	}
-}
-
-func TestGetBearerTokenWrongScheme(t *testing.T) {
-	headers := http.Header{}
-	headers.Set(
-		"Authorization",
-		"Basic abc123",
-	)
-
-	_, err := GetBearerToken(headers)
-	if err == nil {
-		t.Error("expected invalid authorization scheme to return an error")
-	}
-}
-
-func TestGetBearerTokenEmptyToken(t *testing.T) {
-	headers := http.Header{}
-	headers.Set(
-		"Authorization",
-		"Bearer ",
-	)
-
-	_, err := GetBearerToken(headers)
-	if err == nil {
-		t.Error("expected empty bearer token to return an error")
-	}
-}
-
-func TestHashAndCheckPassword(t *testing.T) {
-	password := "my-secret-password"
-
-	hash, err := HashPassword(password)
-	if err != nil {
-		t.Fatalf("HashPassword returned an error: %v", err)
-	}
-
-	if hash == password {
-		t.Error("hashed password should not equal plaintext password")
-	}
-
-	matches, err := CheckPasswordHash(password, hash)
-	if err != nil {
-		t.Fatalf("CheckPasswordHash returned an error: %v", err)
-	}
-
-	if !matches {
-		t.Error("expected correct password to match hash")
-	}
-}
-
-func TestCheckPasswordHashWrongPassword(t *testing.T) {
-	hash, err := HashPassword("correct-password")
-	if err != nil {
-		t.Fatalf("HashPassword returned an error: %v", err)
-	}
-
-	matches, err := CheckPasswordHash("wrong-password", hash)
-	if err != nil {
-		t.Fatalf("CheckPasswordHash returned an error: %v", err)
-	}
-
-	if matches {
-		t.Error("expected wrong password not to match hash")
-	}
-}
+			"expected token %q

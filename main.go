@@ -24,6 +24,7 @@ type apiConfig struct {
 	dbQueries      *database.Queries
 	platform       string
 	jwtSecret      string
+	polkaKey       string
 }
 
 type User struct {
@@ -547,8 +548,36 @@ func (cfg *apiConfig) handlerUpdateUser(w http.ResponseWriter, r *http.Request) 
 	)
 }
 
-func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
-	dbChirps, err := cfg.dbQueries.GetChirps(r.Context())
+func (cfg *apiConfig) handlerGetChirps(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	authorIDString := r.URL.Query().Get("author_id")
+
+	var dbChirps []database.Chirp
+	var err error
+
+	if authorIDString == "" {
+		dbChirps, err = cfg.dbQueries.GetChirps(
+			r.Context(),
+		)
+	} else {
+		authorID, parseErr := uuid.Parse(authorIDString)
+		if parseErr != nil {
+			respondWithError(
+				w,
+				http.StatusBadRequest,
+				"Invalid author ID",
+			)
+			return
+		}
+
+		dbChirps, err = cfg.dbQueries.GetChirpsByAuthor(
+			r.Context(),
+			authorID,
+		)
+	}
+
 	if err != nil {
 		respondWithError(
 			w,
@@ -716,6 +745,25 @@ func (cfg *apiConfig) handlerDeleteChirp(w http.ResponseWriter, r *http.Request)
 }
 
 func (cfg *apiConfig) handlerPolkaWebhook(w http.ResponseWriter, r *http.Request) {
+	apiKey, err := auth.GetAPIKey(r.Header)
+	if err != nil {
+		respondWithError(
+			w,
+			http.StatusUnauthorized,
+			"Unauthorized",
+		)
+		return
+	}
+
+	if apiKey != cfg.polkaKey {
+		respondWithError(
+			w,
+			http.StatusUnauthorized,
+			"Unauthorized",
+		)
+		return
+	}
+
 	type parameters struct {
 		Event string `json:"event"`
 		Data  struct {
@@ -726,7 +774,7 @@ func (cfg *apiConfig) handlerPolkaWebhook(w http.ResponseWriter, r *http.Request
 	decoder := json.NewDecoder(r.Body)
 	params := parameters{}
 
-	err := decoder.Decode(&params)
+	err = decoder.Decode(&params)
 	if err != nil {
 		respondWithError(
 			w,
@@ -784,11 +832,13 @@ func main() {
 	const port = ":8080"
 
 	jwtSecret := os.Getenv("JWT_SECRET")
+	polkaKey := os.Getenv("POLKA_KEY")
 
 	apiCfg := &apiConfig{
 		dbQueries: dbQueries,
 		platform:  platform,
 		jwtSecret: jwtSecret,
+		polkaKey:  polkaKey,
 	}
 
 	// create ServeMux
