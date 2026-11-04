@@ -27,10 +27,11 @@ type apiConfig struct {
 }
 
 type User struct {
-	ID        uuid.UUID `json:"id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-	Email     string    `json:"email"`
+	ID          uuid.UUID `json:"id"`
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
+	Email       string    `json:"email"`
+	IsChirpyRed bool      `json:"is_chirpy_red"`
 }
 
 type Chirp struct {
@@ -244,10 +245,11 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 	}
 
 	user := User{
-		ID:        dbUser.ID,
-		CreatedAt: dbUser.CreatedAt,
-		UpdatedAt: dbUser.UpdatedAt,
-		Email:     dbUser.Email,
+		ID:          dbUser.ID,
+		CreatedAt:   dbUser.CreatedAt,
+		UpdatedAt:   dbUser.UpdatedAt,
+		Email:       dbUser.Email,
+		IsChirpyRed: dbUser.IsChirpyRed,
 	}
 
 	respondWithJSON(
@@ -259,9 +261,8 @@ func (cfg *apiConfig) handlerCreateUser(w http.ResponseWriter, r *http.Request) 
 
 func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 	type parameters struct {
-		Email            string `json:"email"`
-		Password         string `json:"password"`
-		ExpiresInSeconds int    `json:"expires_in_seconds"`
+		Email    string `json:"email"`
+		Password string `json:"password"`
 	}
 
 	decoder := json.NewDecoder(r.Body)
@@ -303,41 +304,63 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	expiresIn := time.Hour
-
-	if params.ExpiresInSeconds > 0 &&
-		params.ExpiresInSeconds < 3600 {
-		expiresIn = time.Duration(params.ExpiresInSeconds) * time.Second
-	}
-
+	// Access token: valid for one hour
 	token, err := auth.MakeJWT(
 		dbUser.ID,
 		cfg.jwtSecret,
-		expiresIn,
+		time.Hour,
 	)
 	if err != nil {
 		respondWithError(
 			w,
 			http.StatusInternalServerError,
-			"Couldn't create token",
+			"Couldn't create access token",
+		)
+		return
+	}
+
+	// Refresh token: valid for 60 days
+	refreshToken := auth.MakeRefreshToken()
+
+	refreshTokenExpiresAt := time.Now().UTC().Add(
+		60 * 24 * time.Hour,
+	)
+
+	_, err = cfg.dbQueries.CreateRefreshToken(
+		r.Context(),
+		database.CreateRefreshTokenParams{
+			Token:     refreshToken,
+			UserID:    dbUser.ID,
+			ExpiresAt: refreshTokenExpiresAt,
+		},
+	)
+	if err != nil {
+		respondWithError(
+			w,
+			http.StatusInternalServerError,
+			"Couldn't create refresh token",
 		)
 		return
 	}
 
 	type returnVals struct {
-		ID        uuid.UUID `json:"id"`
-		CreatedAt time.Time `json:"created_at"`
-		UpdatedAt time.Time `json:"updated_at"`
-		Email     string    `json:"email"`
-		Token     string    `json:"token"`
+		ID           uuid.UUID `json:"id"`
+		CreatedAt    time.Time `json:"created_at"`
+		UpdatedAt    time.Time `json:"updated_at"`
+		Email        string    `json:"email"`
+		IsChirpyRed  bool      `json:"is_chirpy_red"`
+		Token        string    `json:"token"`
+		RefreshToken string    `json:"refresh_token"`
 	}
 
 	respBody := returnVals{
-		ID:        dbUser.ID,
-		CreatedAt: dbUser.CreatedAt,
-		UpdatedAt: dbUser.UpdatedAt,
-		Email:     dbUser.Email,
-		Token:     token,
+		ID:           dbUser.ID,
+		CreatedAt:    dbUser.CreatedAt,
+		UpdatedAt:    dbUser.UpdatedAt,
+		Email:        dbUser.Email,
+		IsChirpyRed:  dbUser.IsChirpyRed,
+		Token:        token,
+		RefreshToken: refreshToken,
 	}
 
 	respondWithJSON(
@@ -345,6 +368,86 @@ func (cfg *apiConfig) handlerLogin(w http.ResponseWriter, r *http.Request) {
 		http.StatusOK,
 		respBody,
 	)
+}
+
+func (cfg *apiConfig) handlerRefresh(w http.ResponseWriter, r *http.Request) {
+	refreshToken, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(
+			w,
+			http.StatusUnauthorized,
+			"Unauthorized",
+		)
+		return
+	}
+
+	dbUser, err := cfg.dbQueries.GetUserFromRefreshToken(
+		r.Context(),
+		refreshToken,
+	)
+	if err != nil {
+		respondWithError(
+			w,
+			http.StatusUnauthorized,
+			"Unauthorized",
+		)
+		return
+	}
+
+	token, err := auth.MakeJWT(
+		dbUser.ID,
+		cfg.jwtSecret,
+		time.Hour,
+	)
+	if err != nil {
+		respondWithError(
+			w,
+			http.StatusInternalServerError,
+			"Couldn't create access token",
+		)
+		return
+	}
+
+	type returnVals struct {
+		Token string `json:"token"`
+	}
+
+	respBody := returnVals{
+		Token: token,
+	}
+
+	respondWithJSON(
+		w,
+		http.StatusOK,
+		respBody,
+	)
+}
+
+func (cfg *apiConfig) handlerRevoke(w http.ResponseWriter, r *http.Request) {
+	refreshToken, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(
+			w,
+			http.StatusUnauthorized,
+			"Unauthorized",
+		)
+		return
+	}
+
+	err = cfg.dbQueries.RevokeRefreshToken(
+		r.Context(),
+		refreshToken,
+	)
+	if err != nil {
+		respondWithError(
+			w,
+			http.StatusInternalServerError,
+			"Couldn't revoke refresh token",
+		)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func cleanBody(body string) string {
@@ -358,6 +461,90 @@ func cleanBody(body string) string {
 	}
 
 	return strings.Join(words, " ")
+}
+
+func (cfg *apiConfig) handlerUpdateUser(w http.ResponseWriter, r *http.Request) {
+	tokenString, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(
+			w,
+			http.StatusUnauthorized,
+			"Unauthorized",
+		)
+		return
+	}
+
+	userID, err := auth.ValidateJWT(
+		tokenString,
+		cfg.jwtSecret,
+	)
+	if err != nil {
+		respondWithError(
+			w,
+			http.StatusUnauthorized,
+			"Unauthorized",
+		)
+		return
+	}
+
+	type parameters struct {
+		Email    string `json:"email"`
+		Password string `json:"password"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+
+	err = decoder.Decode(&params)
+	if err != nil {
+		respondWithError(
+			w,
+			http.StatusBadRequest,
+			"Couldn't decode parameters",
+		)
+		return
+	}
+
+	hashedPassword, err := auth.HashPassword(params.Password)
+	if err != nil {
+		respondWithError(
+			w,
+			http.StatusInternalServerError,
+			"Couldn't hash password",
+		)
+		return
+	}
+
+	dbUser, err := cfg.dbQueries.UpdateUser(
+		r.Context(),
+		database.UpdateUserParams{
+			Email:          params.Email,
+			HashedPassword: hashedPassword,
+			ID:             userID,
+		},
+	)
+	if err != nil {
+		respondWithError(
+			w,
+			http.StatusInternalServerError,
+			"Couldn't update user",
+		)
+		return
+	}
+
+	user := User{
+		ID:          dbUser.ID,
+		CreatedAt:   dbUser.CreatedAt,
+		UpdatedAt:   dbUser.UpdatedAt,
+		Email:       dbUser.Email,
+		IsChirpyRed: dbUser.IsChirpyRed,
+	}
+
+	respondWithJSON(
+		w,
+		http.StatusOK,
+		user,
+	)
 }
 
 func (cfg *apiConfig) handlerGetChirps(w http.ResponseWriter, r *http.Request) {
@@ -441,6 +628,143 @@ func (cfg *apiConfig) handlerGetChirp(w http.ResponseWriter, r *http.Request) {
 	)
 }
 
+func (cfg *apiConfig) handlerDeleteChirp(w http.ResponseWriter, r *http.Request) {
+	// Authenticate the user
+	tokenString, err := auth.GetBearerToken(r.Header)
+	if err != nil {
+		respondWithError(
+			w,
+			http.StatusUnauthorized,
+			"Unauthorized",
+		)
+		return
+	}
+
+	userID, err := auth.ValidateJWT(
+		tokenString,
+		cfg.jwtSecret,
+	)
+	if err != nil {
+		respondWithError(
+			w,
+			http.StatusUnauthorized,
+			"Unauthorized",
+		)
+		return
+	}
+
+	// Get the chirp ID from the URL
+	chirpIDString := r.PathValue("chirpID")
+
+	chirpID, err := uuid.Parse(chirpIDString)
+	if err != nil {
+		respondWithError(
+			w,
+			http.StatusNotFound,
+			"Chirp not found",
+		)
+		return
+	}
+
+	// Find the chirp
+	dbChirp, err := cfg.dbQueries.GetChirp(
+		r.Context(),
+		chirpID,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		respondWithError(
+			w,
+			http.StatusNotFound,
+			"Chirp not found",
+		)
+		return
+	}
+	if err != nil {
+		respondWithError(
+			w,
+			http.StatusInternalServerError,
+			"Couldn't get chirp",
+		)
+		return
+	}
+
+	// Authorize the deletion
+	if dbChirp.UserID != userID {
+		respondWithError(
+			w,
+			http.StatusForbidden,
+			"Forbidden",
+		)
+		return
+	}
+
+	// Delete the chirp
+	err = cfg.dbQueries.DeleteChirp(
+		r.Context(),
+		chirpID,
+	)
+	if err != nil {
+		respondWithError(
+			w,
+			http.StatusInternalServerError,
+			"Couldn't delete chirp",
+		)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (cfg *apiConfig) handlerPolkaWebhook(w http.ResponseWriter, r *http.Request) {
+	type parameters struct {
+		Event string `json:"event"`
+		Data  struct {
+			UserID uuid.UUID `json:"user_id"`
+		} `json:"data"`
+	}
+
+	decoder := json.NewDecoder(r.Body)
+	params := parameters{}
+
+	err := decoder.Decode(&params)
+	if err != nil {
+		respondWithError(
+			w,
+			http.StatusBadRequest,
+			"Couldn't decode parameters",
+		)
+		return
+	}
+
+	if params.Event != "user.upgraded" {
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
+
+	_, err = cfg.dbQueries.UpgradeUserToChirpyRed(
+		r.Context(),
+		params.Data.UserID,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		respondWithError(
+			w,
+			http.StatusNotFound,
+			"User not found",
+		)
+		return
+	}
+	if err != nil {
+		respondWithError(
+			w,
+			http.StatusInternalServerError,
+			"Couldn't upgrade user",
+		)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func main() {
 	err := godotenv.Load()
 	if err != nil {
@@ -480,11 +804,19 @@ func main() {
 	mux.HandleFunc("GET  /admin/metrics", apiCfg.handlerMetrics)
 	mux.HandleFunc("GET  /api/healthz", handlerReadiness)
 	mux.Handle("/app/", apiCfg.middlewareMetricsInc(handler))
-	mux.HandleFunc("POST /api/users", apiCfg.handlerCreateUser)
+
 	mux.HandleFunc("POST /api/chirps", apiCfg.handlerCreateChirp)
 	mux.HandleFunc("GET /api/chirps", apiCfg.handlerGetChirps)
 	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handlerGetChirp)
+	mux.HandleFunc("DELETE /api/chirps/{chirpID}", apiCfg.handlerDeleteChirp)
+
+	mux.HandleFunc("POST /api/users", apiCfg.handlerCreateUser)
+	mux.HandleFunc("PUT /api/users", apiCfg.handlerUpdateUser)
 	mux.HandleFunc("POST /api/login", apiCfg.handlerLogin)
+	mux.HandleFunc("POST /api/refresh", apiCfg.handlerRefresh)
+	mux.HandleFunc("POST /api/revoke", apiCfg.handlerRevoke)
+
+	mux.HandleFunc("POST /api/polka/webhooks", apiCfg.handlerPolkaWebhook)
 
 	// create http.Server using the mux and port 8080
 	server := &http.Server{
